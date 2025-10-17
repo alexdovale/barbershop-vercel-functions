@@ -1,0 +1,14 @@
+{
+  "name": "barbershop-vercel-functions",
+  "version": "1.0.0",
+  "description": "Funções de backend para Barbershop Cloud Flex",
+  "main": "index.js",
+  "scripts": {
+    "start": "vercel dev"
+  },
+  "dependencies": {
+    "firebase-admin": "^11.5.0",
+    "moment-timezone": "^0.5.43",
+    "axios": "^1.6.8"
+  }
+}
