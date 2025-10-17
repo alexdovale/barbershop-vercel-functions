@@ -1,21 +1,19 @@
 // api/enviarLembretes.js (Função HTTP para ser AGENDADA por um serviço externo)
-// Rota: SEU_DOMINIO/api/enviarLembretes
 
 const admin = require('firebase-admin');
 const axios = require('axios');
+const twilio = require('twilio'); // SDK do Twilio
 const moment = require('moment-timezone');
 
 // =========================================================================
 // INICIALIZAÇÃO DO ADMIN SDK 
 // =========================================================================
-// O Vercel lerá o conteúdo do seu JSON da variável FIREBASE_SERVICE_ACCOUNT.
 if (!admin.apps.length) {
     try {
         const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
         admin.initializeApp({
             credential: admin.credential.cert(serviceAccount)
         });
-        console.log("Firebase Admin SDK inicializado com sucesso para Lembretes.");
     } catch (e) {
         console.error("Erro CRÍTICO na inicialização do Admin SDK para Lembretes:", e.message);
     }
@@ -23,26 +21,47 @@ if (!admin.apps.length) {
 
 const db = admin.firestore();
 
-// Funções de envio (Reutiliza a lógica do WhatsApp do seu provedor)
-async function enviarAlertaWhatsApp(numero, mensagem) {
-    const url = process.env.WHATSAPP_API_URL;
-    const token = process.env.WHATSAPP_AUTH_TOKEN;
+// =========================================================================
+// CONFIGURAÇÃO DO TWILIO (Deve ser igual ao avancarFila.js)
+// =========================================================================
+const accountSid = process.env.TWILIO_ACCOUNT_SID;
+const authToken = process.env.WHATSAPP_AUTH_TOKEN; 
+const client = accountSid && authToken ? twilio(accountSid, authToken) : null;
+const fromNumber = 'whatsapp:+14155238886'; // <-- Número do Sandbox (Remetente)
+
+// =========================================================================
+// FUNÇÃO DE ENVIO WHATSAPP (A LÓGICA DE ENVIO DO LEMBRETE)
+// =========================================================================
+async function enviarAlertaWhatsApp(numero, mensagem, tipoAlerta, dataHora) {
+    if (!client) {
+        console.error("ERRO: Cliente Twilio não inicializado.");
+        return false;
+    }
     
-    // ⚠️ SUBSTITUA ESTE PLACEHOLDER PELO CÓDIGO REAL DO SEU PROVEDOR DE WHATSAPP
+    const toNumber = `whatsapp:${numero}`;
+
     try {
-        await axios.post(url, {
-            token: token,
-            to: numero,
-            body: mensagem 
-        }, {
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/json'
-            }
+        // Para Lembretes Agendados, você deve usar um TEMPLATE APROVADO pela Meta
+        // O Twilio Sandbox permite o uso de alguns templates de teste.
+
+        // **USANDO UM TEMPLATE DE EXEMPLO** (Substitua pelos seus valores reais)
+        const contentSid = 'HXxxxxxxxxxxxxxxxxxxxxxxx'; // Substitua pelo SID real do seu template
+        
+        await client.messages.create({
+            contentSid: contentSid,
+            contentVariables: {
+                // Estes são os parâmetros do seu template APROVADO
+                '1': dataHora.format('DD/MM'), // Ex: 20/10
+                '2': dataHora.format('HH:mm') // Ex: 14:30
+            },
+            from: fromNumber, 
+            to: toNumber
         });
+        
         return true;
     } catch (error) {
-        console.error("Erro ao enviar WhatsApp agendado:", error.response ? error.response.data : error.message);
+        console.error("Erro ao enviar Lembrete (Twilio):", error.message);
+        // Se a chamada falhar, o motivo mais comum é o Template estar errado ou a conta não estar em produção.
         return false;
     }
 }
@@ -52,20 +71,18 @@ async function enviarAlertaWhatsApp(numero, mensagem) {
 // HANDLER PRINCIPAL: ENVIO DE LEMBRETES (Acionado pelo Cron Job Externo)
 // =========================================================================
 module.exports = async (req, res) => {
-    // ⚠️ Idealmente, adicione uma chave de segurança aqui para garantir que SÓ o seu cron job chame este endpoint (Ex: verificar um token secreto no header da requisição).
+    // ⚠️ Idealmente, proteja este endpoint com um token secreto no header da requisição.
     
-    // Permite que o Cron Job faça chamadas GET ou POST simples
     if (req.method !== 'GET' && req.method !== 'POST') {
          return res.status(405).send('Método não permitido.');
     }
     
     try {
-        // Define o intervalo de busca para o dia seguinte (00:00 a 23:59)
-        const fusoHorario = 'America/Sao_Paulo'; // Mantenha o fuso horário da barbearia
+        const fusoHorario = 'America/Sao_Paulo'; 
         const amanha = moment().tz(fusoHorario).add(1, 'days').startOf('day');
         const depoisDeAmanha = moment().tz(fusoHorario).add(2, 'days').startOf('day');
 
-        // Busca agendamentos para o dia seguinte que AINDA NÃO FORAM CONFIRMADOS.
+        // 1. Busca agendamentos para o dia seguinte que ainda não foram confirmados.
         const agendamentosSnapshot = await db.collection('agendamentos_clientes')
             .where('data_hora_agendamento', '>=', amanha.toDate())
             .where('data_hora_agendamento', '<', depoisDeAmanha.toDate())
@@ -77,15 +94,12 @@ module.exports = async (req, res) => {
 
         agendamentosSnapshot.forEach(doc => {
             const agendamento = doc.data();
-            const horaFormatada = moment(agendamento.data_hora_agendamento.toDate()).tz(fusoHorario).format('HH:mm');
-            const barbeiroNome = agendamento.barbeiro_nome || 'o seu profissional';
+            const dataHoraAgendamento = moment(agendamento.data_hora_agendamento.toDate()).tz(fusoHorario);
             
-            // Mensagem com o pedido de resposta SIM/NÃO
-            const mensagem = `🗓️ Lembrete Barbershop Cloud 🗓️\n\nOlá ${agendamento.nome_cliente},\n\nSeu horário com ${barbeiroNome} é *amanhã* às *${horaFormatada}h*. Para GARANTIR, por favor, *responda SIM* a esta mensagem dentro de 2 horas.`;
+            // 2. Envia o template de lembrete
+            promisesEnvio.push(enviarAlertaWhatsApp(agendamento.whatsapp, null, 'LEMBRETE', dataHoraAgendamento));
             
-            promisesEnvio.push(enviarAlertaWhatsApp(agendamento.whatsapp, mensagem));
-            
-            // Marca o agendamento para indicar que a notificação de confirmação foi enviada
+            // 3. Marca o agendamento para indicar que a notificação foi enviada
             promisesUpdate.push(doc.ref.update({ status_alerta: 'alerta_confirmacao_enviado' })); 
         });
 
@@ -98,6 +112,6 @@ module.exports = async (req, res) => {
         
     } catch (error) {
         console.error("Erro CRÍTICO no envio de lembretes agendados:", error);
-        return res.status(500).send('Erro interno no processo de agendamento. Verifique logs e variáveis de ambiente.');
+        return res.status(500).send('Erro interno no processo de agendamento.');
     }
 };
