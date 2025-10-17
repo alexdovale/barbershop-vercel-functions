@@ -1,43 +1,48 @@
-// api/avancarFila.js (Função HTTP para Vercel)
-// Rota: SEU_DOMINIO/api/avancarFila
+// api/avancarFila.js (Função HTTP para Vercel - MONITORAMENTO DA FILA)
 
 const admin = require('firebase-admin');
 const axios = require('axios');
-const moment = require('moment-timezone'); // Incluído por boa prática, mas não estritamente necessário para esta função
+const moment = require('moment-timezone'); // Incluído por boa prática
 
-// Inicializa o Admin SDK APENAS se não estiver inicializado (para evitar erros em ambientes serverless)
-// Esta função lê a variável FIREBASE_SERVICE_ACCOUNT do Vercel
+// =========================================================================
+// INICIALIZAÇÃO DO ADMIN SDK USANDO A CHAVE JSON (Variável de Ambiente)
+// =========================================================================
+// O Vercel lerá o conteúdo completo do seu JSON da variável FIREBASE_SERVICE_ACCOUNT.
 if (!admin.apps.length) {
-    // ⚠️ ATENÇÃO: É VITAL QUE O CONTEÚDO DO JSON ESTEJA CORRETAMENTE FORMATADO NO VERCEL
     try {
+        // Converte a string JSON (variável de ambiente) em um objeto
         const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+        
         admin.initializeApp({
             credential: admin.credential.cert(serviceAccount)
+            // Não é necessário databaseURL, mas pode ser adicionado se usar Realtime Database
         });
+        console.log("Firebase Admin SDK inicializado com sucesso.");
     } catch (e) {
-        console.error("Erro ao inicializar Firebase Admin SDK:", e);
-        // Em caso de erro de parsing, a função não deve prosseguir
-        // Pode ser útil para debugging no Vercel logs
+        console.error("Erro CRÍTICO na inicialização do Firebase Admin SDK:", e.message);
+        // Em caso de erro de parsing, a função não conseguirá acessar o DB.
     }
 }
 
 const db = admin.firestore();
 
-// Funções de envio (Substitua a lógica do axios pela do seu provedor de WhatsApp!)
+// =========================================================================
+// FUNÇÃO DE ENVIO WHATSAPP (A PARTE QUE REQUER O PLANO PAGO/GATEWAY)
+// =========================================================================
 async function enviarAlertaWhatsApp(numero, mensagem) {
     const url = process.env.WHATSAPP_API_URL;
     const token = process.env.WHATSAPP_AUTH_TOKEN;
     
-    // ESTE É O CÓDIGO DO PLACEHOLDER - SUBSTITUA PELO CÓDIGO REAL DO SEU PROVEDOR DE WHATSAPP
+    // ⚠️ SUBSTITUA ESTE PLACEHOLDER PELO CÓDIGO REAL DO SEU PROVEDOR DE WHATSAPP
     try {
-        // Exemplo: Simulação de uma chamada de API (Substitua por axios.post ou fetch real)
+        // Exemplo de chamada de API genérica (AJUSTE para a sintaxe do seu provedor!)
         await axios.post(url, {
             token: token,
-            to: numero,
-            body: mensagem 
+            to: numero, // Número de destino
+            body: mensagem // Mensagem com o conteúdo do alerta
         }, {
             headers: {
-                'Authorization': `Bearer ${token}`, // Ou o cabeçalho exigido
+                'Authorization': `Bearer ${token}`,
                 'Content-Type': 'application/json'
             }
         });
@@ -49,49 +54,50 @@ async function enviarAlertaWhatsApp(numero, mensagem) {
     }
 }
 
-// Handler da requisição HTTP (endpoint principal)
+// =========================================================================
+// HANDLER PRINCIPAL: AVANÇO DA FILA (Monitoramento e Disparo)
+// =========================================================================
 module.exports = async (req, res) => {
-    // Apenas requisições POST são aceitas para avançar a fila
+    // 1. Validação de Método
     if (req.method !== 'POST') {
         return res.status(405).send('Método não permitido. Use POST.');
     }
 
-    // O Barbeiro envia a nova senha em atendimento no corpo da requisição POST (via App)
+    // 2. Validação de Input
     const { novaSenhaEmAtendimento } = req.body; 
 
-    if (!novaSenhaEmAtendimento || typeof novaSenhaEmAtendimento !== 'number') {
-        return res.status(400).send('Campo novaSenhaEmAtendimento (number) é obrigatório.');
+    if (!novaSenhaEm Atendimento || typeof novaSenhaEmAtendimento !== 'number') {
+        return res.status(400).send('Campo novaSenhaEmAtendimento (number) é obrigatório no corpo da requisição.');
     }
 
     try {
-        // Ação 1: Atualiza a senha no Firestore (Gatilho visual para o App do Cliente)
+        // Ação 1: Atualiza o gatilho no Firestore
         await db.collection('status_operacional').doc('fila_atual').update({
             senha_em_atendimento: novaSenhaEmAtendimento,
-            timestamp_ultima_atualizacao: admin.firestore.FieldValue.serverTimestamp() // Para rastreio
+            timestamp_ultima_atualizacao: admin.firestore.FieldValue.serverTimestamp()
         });
 
-        // Ação 2: Busca os clientes na fila para notificar
+        // Ação 2: Busca os clientes na fila de espera
         const clientesNaFilaSnapshot = await db.collection('clientes_na_fila_hoje')
             .where('status', 'in', ['espera', 'alertado'])
-            .orderBy('timestamp_entrada', 'asc') // Ordem de chegada
-            .limit(5) // Limite de notificações para economia
+            .orderBy('timestamp_entrada', 'asc')
+            .limit(5)
             .get();
             
         const promisesEnvio = [];
         let contadorPosicao = 1;
 
+        // Ação 3: Itera sobre os próximos clientes e notifica
         for (const doc of clientesNaFilaSnapshot.docs) {
             const dadosCliente = doc.data();
             const whatsappCliente = dadosCliente.whatsapp;
 
-            // Condição: O número da senha do cliente deve ser maior que o que está sendo chamado agora.
             if (dadosCliente.numero_senha > novaSenhaEmAtendimento) {
                 let mensagemAlerta;
 
                 if (contadorPosicao === 1) {
-                    // PRIMEIRO DA FILA (O PRÓXIMO): Alerta Forte
+                    // O PRÓXIMO!
                     mensagemAlerta = `✂️ É QUASE A SUA VEZ! ✂️\n\nA senha *${novaSenhaEmAtendimento}* está em atendimento. Você é o *PRÓXIMO*! Por favor, retorne à barbearia agora.`;
-                    // Marca como 'alertado'
                     promisesEnvio.push(doc.ref.update({ status: 'alertado' }));
                 } else if (contadorPosicao <= 3) {
                     // PRÓXIMOS (Atualização de posição)
@@ -113,6 +119,6 @@ module.exports = async (req, res) => {
 
     } catch (error) {
         console.error("Erro CRÍTICO no avanço da fila:", error);
-        return res.status(500).send('Erro interno ao processar a fila. Verifique os logs do Vercel.');
+        return res.status(500).send('Erro interno ao processar a fila. Verifique se a variável FIREBASE_SERVICE_ACCOUNT está correta.');
     }
 };
