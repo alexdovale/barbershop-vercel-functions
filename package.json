@@ -1,15 +1,25 @@
 {
-  "name": "barbershop-vercel-functions",
-  "version": "1.0.0",
-  "description": "Funções de backend para Barbershop Cloud Flex",
-  "main": "index.js",
+  "name": "functions",
+  "description": "Cloud Functions for Firebase",
   "scripts": {
-    "start": "vercel dev"
+    "serve": "firebase emulators:start",
+    "shell": "firebase functions:shell",
+    "start": "npm run shell",
+    "deploy": "firebase deploy --only functions",
+    "logs": "firebase functions:log"
   },
   "dependencies": {
     "firebase-admin": "^11.5.0",
-    "axios": "^1.6.8",
-    "moment-timezone": "^0.5.43",
-    "twilio": "^5.0.4"
-  }
+    "firebase-functions": "^4.3.0",
+    "twilio": "^5.0.4",
+    "moment-timezone": "^0.5.43"
+  },
+  "engines": {
+    "node": "18"
+  },
+  "main": "index.js",
+  "devDependencies": {
+    "firebase-functions-test": "^3.1.0"
+  },
+  "private": true
 }
